@@ -21,7 +21,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   router.post('/', async (req, res) => {
     try {
       const jobData = req.body;
-      
+
       // Validate required fields
       const requiredFields = ['title', 'company', 'location', 'description', 'recruiterId'];
       for (const field of requiredFields) {
@@ -42,8 +42,12 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
         });
       }
 
+      // Determine verified status: true if licenseImage is provided
+      const isVerified = !!jobData.licenseImage;
+
       const newJob = {
         ...jobData,
+        isVerified,          // add derived field
         status: 'active',
         applicants: 0,
         createdAt: new Date(),
@@ -71,20 +75,20 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   // GET: Get all jobs (for jobs page)
   router.get('/', async (req, res) => {
     try {
-      const { 
-        page = 1, 
-        limit = 12, 
+      const {
+        page = 1,
+        limit = 12,
         search = '',
         location = '',
         type = '',
         experience = ''
       } = req.query;
-      
+
       const skip = (parseInt(page) - 1) * parseInt(limit);
 
       // Build filter query
       let filter = { status: 'active' };
-      
+
       if (search) {
         filter.$or = [
           { title: { $regex: search, $options: 'i' } },
@@ -93,15 +97,15 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
           { description: { $regex: search, $options: 'i' } }
         ];
       }
-      
+
       if (location) {
         filter.location = { $regex: location, $options: 'i' };
       }
-      
+
       if (type) {
         filter.type = type;
       }
-      
+
       if (experience) {
         filter.experience = experience;
       }
@@ -174,7 +178,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   router.get('/recruiter/:recruiterId', async (req, res) => {
     try {
       const { recruiterId } = req.params;
-      
+
       const jobs = await jobsCollection
         .find({ recruiterId })
         .sort({ createdAt: -1 })
@@ -268,11 +272,15 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
         });
       }
 
+      // Update isVerified based on licenseImage presence
+      const isVerified = !!updateData.licenseImage;
+
       const result = await jobsCollection.updateOne(
         { _id: new ObjectId(id) },
         {
           $set: {
             ...updateData,
+            isVerified,
             updatedAt: new Date()
           }
         }
@@ -528,8 +536,8 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
         });
       }
 
-      const application = await applicationsCollection.findOne({ 
-        _id: new ObjectId(applicationId) 
+      const application = await applicationsCollection.findOne({
+        _id: new ObjectId(applicationId)
       });
 
       if (!application) {
@@ -598,8 +606,8 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
       }
 
       // Get application to find the job
-      const application = await applicationsCollection.findOne({ 
-        _id: new ObjectId(applicationId) 
+      const application = await applicationsCollection.findOne({
+        _id: new ObjectId(applicationId)
       });
 
       if (!application) {

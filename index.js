@@ -47,6 +47,7 @@ let interviewsCollection;
 let postsCollection;
 let jobsCollection;
 let applicationsCollection;
+let verificationCodesCollection;
 
 // Socket.io connection handling
 const onlineUsers = new Map(); // Map to track online users: userId -> socketId
@@ -249,7 +250,7 @@ async function run() {
     postsCollection = db.collection("posts");
     jobsCollection = db.collection("jobs");
     applicationsCollection = db.collection("applications");
-
+    verificationCodesCollection = db.collection("verification_codes");
     await client.db("admin").command({ ping: 1 });
     console.log("✅ Successfully connected to MongoDB!");
 
@@ -266,6 +267,9 @@ function initializeRoutes() {
   // User Routes
   const userRoutes = require('./routes/users')(usersCollection);
   app.use('/api/users', userRoutes);
+
+  const authRoutes = require('./routes/auth')(db);
+  app.use('/api/auth', authRoutes);
 
   // Connections Routes
   const connectionRoutes = require('./routes/connections')(usersCollection, connectionsCollection, notificationsCollection);

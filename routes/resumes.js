@@ -1,14 +1,21 @@
 const express = require('express');
 const PDFDocument = require('pdfkit');
-const router = express.Router();
+const { ObjectId } = require('mongodb');
+const aiAuth = require('../middleware/aiAuth');
 
 module.exports = (db) => {
+  const router = express.Router();
+  router.use(aiAuth(db.collection('users')));
+  router.param('id', (req, res, next, id) => {
+    if (!/^[a-f0-9]{24}$/i.test(id)) return res.status(400).json({ error: 'Invalid resume ID' });
+    next();
+  });
   const resumesCollection = db.collection('resumes');
 
   // Save resume
   router.post('/', async (req, res) => {
     try {
-      const resumeData = req.body;
+      const resumeData = { ...req.body, userId: req.aiIdentity.uid };
       
       // Validate required fields
       if (!resumeData || !resumeData.userId) {
@@ -35,10 +42,10 @@ module.exports = (db) => {
   router.put('/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const updateData = req.body;
+      const { _id, userId, createdAt, ...updateData } = req.body;
 
       const result = await resumesCollection.updateOne(
-        { _id: new require('mongodb').ObjectId(id) },
+        { _id: new ObjectId(id), userId: req.aiIdentity.uid },
         { 
           $set: {
             ...updateData,
@@ -64,6 +71,7 @@ module.exports = (db) => {
   router.get('/user/:userId', async (req, res) => {
     try {
       const { userId } = req.params;
+      if (userId !== req.aiIdentity.uid) return res.status(403).json({ error: 'You can only access your own resumes' });
       const resumes = await resumesCollection.find({ userId }).toArray();
       
       res.json(resumes);
@@ -77,7 +85,7 @@ module.exports = (db) => {
     try {
       const { id } = req.params;
       const resume = await resumesCollection.findOne({ 
-        _id: new require('mongodb').ObjectId(id) 
+        _id: new ObjectId(id), userId: req.aiIdentity.uid 
       });
 
       if (!resume) {
@@ -96,7 +104,7 @@ module.exports = (db) => {
       const { id } = req.params;
 
       const result = await resumesCollection.deleteOne({ 
-        _id: new require('mongodb').ObjectId(id) 
+        _id: new ObjectId(id), userId: req.aiIdentity.uid 
       });
 
       if (result.deletedCount === 0) {
@@ -117,7 +125,7 @@ module.exports = (db) => {
     let doc;
 
     try {
-      const resumeData = req.body;
+      const resumeData = { ...req.body, userId: req.aiIdentity.uid };
 
       // Validate resume data
       if (!resumeData || !resumeData.personal || !resumeData.personal.name) {
@@ -543,7 +551,7 @@ module.exports = (db) => {
     }
 
     const result = await resumesCollection.deleteOne({ 
-      _id: new require('mongodb').ObjectId(id) 
+      _id: new ObjectId(id), userId: req.aiIdentity.uid 
     });
 
     if (result.deletedCount === 0) {

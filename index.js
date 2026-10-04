@@ -27,7 +27,7 @@ app.use(
 app.use(express.json());
 
 // MongoDB connection
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.jcakfyu.mongodb.net/career-connect-ai?appName=Cluster0`;
+const uri = `mongodb+srv://career-connect-ai:75TOi7EwdkC6RjPb@cluster0.jcakfyu.mongodb.net/?appName=Cluster0`;
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -288,8 +288,10 @@ function initializeRoutes() {
   );
   app.use("/api/payments", paymentRoutes);
 
+  app.use("/api/ai", require("./routes/ai")(db));
+
   // ATS Score Routes
-  const atsScoreRoutes = require("./routes/atsScore")(atsScoresCollection);
+  const atsScoreRoutes = require("./routes/atsScore")(atsScoresCollection, db);
   app.use("/api/ats", atsScoreRoutes);
 
   // Interview Routes

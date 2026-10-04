@@ -8,11 +8,12 @@ require("dotenv").config();
 const app = express();
 const server = http.createServer(app);
 const port = process.env.PORT || 5000;
+const allowedOrigins = (process.env.CLIENT_ORIGINS || "http://localhost:5173").split(",").map(value => value.trim()).filter(Boolean);
 
 // Socket.io configuration
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: allowedOrigins,
     credentials: true,
   },
 });
@@ -20,14 +21,15 @@ const io = new Server(server, {
 // Middleware
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: allowedOrigins,
     credentials: true,
   })
 );
 app.use(express.json());
 
 // MongoDB connection
-const uri = `mongodb+srv://career-connect-ai:75TOi7EwdkC6RjPb@cluster0.jcakfyu.mongodb.net/?appName=Cluster0`;
+const uri = process.env.MONGODB_URI;
+if (!uri) throw new Error("Set MONGODB_URI in the server environment.");
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -63,10 +65,21 @@ async function getUnreadCount(userId) {
   return count;
 }
 
+io.use(async (socket, next) => {
+  if (!usersCollection || !notificationsCollection) return next(new Error("Service is starting. Try again shortly."));
+  try {
+    const { getFirebaseAuth } = require("./middleware/aiAuth");
+    const identity = await getFirebaseAuth().verifyIdToken(socket.handshake.auth?.token || "", true);
+    socket.data.uid = identity.uid;
+    next();
+  } catch { next(new Error("Please sign in again to connect.")); }
+});
+
 io.on("connection", (socket) => {
   console.log("New client connected:", socket.id);
 
   socket.on("user-online", async (userId) => {
+    if (userId !== socket.data.uid) return;
     onlineUsers.set(userId, socket.id);
     console.log(`User ${userId} is online`);
 
@@ -81,7 +94,13 @@ io.on("connection", (socket) => {
     socket.emit("notification-count", count);
   });
 
-  socket.on("join-conversation", (conversationId) => {
+  socket.on("join-conversation", async (conversationId) => {
+    try {
+      const [first, second] = String(conversationId).split("_");
+      if (![first, second].includes(socket.data.uid)) return;
+      const connection = await connectionsCollection.findOne({ status: "accepted", $or: [{ senderId: first, receiverId: second }, { senderId: second, receiverId: first }] });
+      if (!connection) return;
+    } catch { return; }
     socket.join(conversationId);
     console.log(`Socket ${socket.id} joined conversation ${conversationId}`);
   });
@@ -93,7 +112,12 @@ io.on("connection", (socket) => {
 
   socket.on("send-message", async (data) => {
     try {
-      const { conversationId, senderId, receiverId, content } = data;
+      const { conversationId, receiverId, content } = data;
+      const senderId = socket.data.uid;
+      if (typeof content !== "string" || !content.trim() || content.length > 10000) return;
+      if (conversationId !== [senderId, receiverId].sort().join("_")) return;
+      const connection = await connectionsCollection.findOne({ status: "accepted", $or: [{ senderId, receiverId }, { senderId: receiverId, receiverId: senderId }] });
+      if (!connection) return;
 
       const message = {
         conversationId,
@@ -143,7 +167,9 @@ io.on("connection", (socket) => {
   });
 
   socket.on("typing", (data) => {
-    const { conversationId, userId, isTyping } = data;
+    const { conversationId, isTyping } = data;
+    const userId = socket.data.uid;
+    if (!socket.rooms.has(conversationId)) return;
     socket.to(conversationId).emit("user-typing", {
       userId,
       isTyping,
@@ -152,7 +178,8 @@ io.on("connection", (socket) => {
 
   socket.on("mark-read", async (data) => {
     try {
-      const { conversationId, userId } = data;
+      const { conversationId } = data;
+      const userId = socket.data.uid;
 
       await messagesCollection.updateMany(
         {
@@ -173,7 +200,8 @@ io.on("connection", (socket) => {
 
   socket.on("mark-notification-read", async (data) => {
     try {
-      const { notificationId, userId } = data;
+      const { notificationId } = data;
+      const userId = socket.data.uid;
 
       await notificationsCollection.updateOne(
         { _id: new ObjectId(notificationId), userId },
@@ -191,7 +219,7 @@ io.on("connection", (socket) => {
 
   socket.on("mark-all-notifications-read", async (data) => {
     try {
-      const { userId } = data;
+      const userId = socket.data.uid;
 
       await notificationsCollection.updateMany(
         { userId, read: false },
@@ -222,7 +250,7 @@ io.on("connection", (socket) => {
 async function run() {
   try {
     await client.connect();
-    db = client.db("career_connect");
+    db = client.db(process.env.MONGODB_DB || "career_connect");
     usersCollection = db.collection("users");
     connectionsCollection = db.collection("connections");
     messagesCollection = db.collection("messages");
@@ -245,6 +273,11 @@ async function run() {
 }
 
 function initializeRoutes() {
+  // Only verification endpoints are public. Member data requires a verified session.
+  app.use("/api", (req, res, next) => {
+    if (req.path === "/auth" || req.path.startsWith("/auth/")) return next();
+    return require("./middleware/memberSession")(req, res, next);
+  });
   // Auth middleware (factory)
   const authMiddleware = require("./middleware/auth")(usersCollection);
 

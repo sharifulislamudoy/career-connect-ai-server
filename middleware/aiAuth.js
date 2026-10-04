@@ -204,3 +204,5 @@ module.exports = (usersCollection) => {
     return next();
   };
 };
+// Shared verifier for HTTP and Socket.IO member sessions.
+module.exports.getFirebaseAuth = getFirebaseAuth;

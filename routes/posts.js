@@ -4,6 +4,15 @@ module.exports = (postsCollection, usersCollection) => {
     const express = require('express');
     const router = express.Router();
 
+    router.use((req, res, next) => {
+        if (req.params?.postId && !ObjectId.isValid(req.params.postId)) return res.status(400).json({ success: false, message: "Invalid post." });
+        next();
+    });
+    router.param("postId", (req, res, next, id) => {
+        if (!ObjectId.isValid(id)) return res.status(400).json({ success: false, message: "Invalid post." });
+        next();
+    });
+
     // Helper: extract keywords from user profile
     const extractUserKeywords = (user) => {
         const text = (user.profession || '') + ' ' + (user.bio || '');
@@ -25,7 +34,7 @@ module.exports = (postsCollection, usersCollection) => {
     // GET all posts with personalized sorting
     router.get('/', async (req, res) => {
         try {
-            const { userId } = req.query;
+            const userId = req.identity.uid;
 
             let keywordSet = new Set();
             if (userId) {
@@ -71,7 +80,9 @@ module.exports = (postsCollection, usersCollection) => {
     // Create a new post
     router.post('/', async (req, res) => {
         try {
-            const postData = req.body;
+            const profile = await usersCollection.findOne({ uid: req.identity.uid });
+            const postData = { ...req.body, userId: req.identity.uid, userEmail: req.identity.email || profile?.email, userProfile: { displayName: profile?.displayName || "Member", photoURL: profile?.photoURL || "", profession: profile?.profession || "" } };
+            if (typeof postData.content !== "string" || !postData.content.trim() || postData.content.length > 10000) return res.status(400).json({ success: false, message: "Write a post between 1 and 10,000 characters." });
             if (!postData.content || !postData.userId || !postData.userEmail) {
                 return res.status(400).json({
                     success: false,
@@ -111,7 +122,8 @@ module.exports = (postsCollection, usersCollection) => {
     router.post('/:postId/like', async (req, res) => {
         try {
             const { postId } = req.params;
-            const { userId, userEmail } = req.body;
+            const userId = req.identity.uid;
+            const userEmail = req.identity.email || "";
             if (!userId || !userEmail) {
                 return res.status(400).json({
                     success: false,
@@ -163,7 +175,12 @@ module.exports = (postsCollection, usersCollection) => {
     router.post('/:postId/comment', async (req, res) => {
         try {
             const { postId } = req.params;
-            const { userId, userEmail, content, userProfile } = req.body;
+            const userId = req.identity.uid;
+            const userEmail = req.identity.email || "";
+            const { content } = req.body;
+            if (typeof content !== "string" || !content.trim() || content.length > 5000) return res.status(400).json({ success: false, message: "Write a comment between 1 and 5,000 characters." });
+            const profile = await usersCollection.findOne({ uid: userId });
+            const userProfile = { displayName: profile?.displayName || "Member", photoURL: profile?.photoURL || "", profession: profile?.profession || "" };
             if (!userId || !userEmail || !content) {
                 return res.status(400).json({
                     success: false,
@@ -212,7 +229,7 @@ module.exports = (postsCollection, usersCollection) => {
     router.delete('/:postId', async (req, res) => {
         try {
             const { postId } = req.params;
-            const { userId } = req.body;
+            const userId = req.identity.uid;
             const post = await postsCollection.findOne({ _id: new ObjectId(postId) });
             if (!post) {
                 return res.status(404).json({

@@ -1,7 +1,7 @@
 // middleware/auth.js
 module.exports = (usersCollection) => {
   return async (req, res, next) => {
-    const userId = req.headers["x-user-id"];
+    const userId = req.identity?.uid;
     if (!userId) {
       return res
         .status(401)

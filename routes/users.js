@@ -19,7 +19,12 @@ module.exports = (usersCollection) => {
     // Create or update user
     router.post('/', async (req, res) => {
         try {
-            const userData = req.body;
+            const fields = ["displayName", "photoURL", "location", "profession", "bio", "skills", "experience", "education", "careerGoals", "phone", "website", "linkedin", "github", "socialLinks", "headline", "profileCompleted"];
+            const userData = Object.fromEntries(fields.filter(key => key in req.body).map(key => [key, req.body[key]]));
+            userData.uid = req.identity.uid;
+            userData.email = req.identity.email;
+            // Existing roles are preserved; only a new account can choose seeker/recruiter.
+            const requestedType = ["jobSeeker", "recruiter"].includes(req.body.userType) ? req.body.userType : "jobSeeker";
 
             // Validate required fields
             if (!userData.uid || !userData.email) {
@@ -55,7 +60,7 @@ module.exports = (usersCollection) => {
                 // Create new user with default package
                 const newUser = {
                     ...userData,
-                    userType: userData.userType || 'jobSeeker', // Default to jobSeeker
+                    userType: requestedType, // Default to jobSeeker
                     package: 'basic', // Default package
                     profileCompleted: false,
                     createdAt: new Date(),
@@ -85,7 +90,10 @@ module.exports = (usersCollection) => {
         try {
             const { uid } = req.params;
 
-            const user = await usersCollection.findOne({ uid });
+            const actor = await usersCollection.findOne({ uid: req.identity.uid });
+            const ownOrStaff = uid === req.identity.uid || ['admin', 'moderator'].includes(actor?.userType);
+            const projection = ownOrStaff ? {} : { uid: 1, displayName: 1, photoURL: 1, profession: 1, location: 1, bio: 1, skills: 1, experience: 1, education: 1, userType: 1, profileCompleted: 1 };
+            const user = await usersCollection.findOne({ uid }, { projection });
 
             if (!user) {
                 return res.status(404).json({
@@ -111,7 +119,10 @@ module.exports = (usersCollection) => {
     // Get all users (for admin purposes)
     router.get('/', async (req, res) => {
         try {
-            const users = await usersCollection.find({}).toArray();
+            const actor = await usersCollection.findOne({ uid: req.identity.uid });
+            const staff = ['admin', 'moderator'].includes(actor?.userType);
+            const projection = staff ? {} : { uid: 1, displayName: 1, photoURL: 1, profession: 1, location: 1, bio: 1, skills: 1, experience: 1, education: 1, userType: 1, profileCompleted: 1 };
+            const users = await usersCollection.find({}, { projection }).toArray();
 
             res.json({
                 success: true,
@@ -132,7 +143,9 @@ module.exports = (usersCollection) => {
     router.put('/:uid', async (req, res) => {
         try {
             const { uid } = req.params;
-            const updateData = req.body;
+            if (uid !== req.identity.uid) return res.status(403).json({ success: false, message: "You can only update your own profile." });
+            const protectedFields = new Set(["_id", "uid", "email", "userType", "role", "package", "packageExpiry", "createdAt", "isBlocked", "isBanned", "status"]);
+            const updateData = Object.fromEntries(Object.entries(req.body).filter(([key]) => !protectedFields.has(key) && !key.startsWith("$") && !key.includes(".")));
 
             const result = await usersCollection.updateOne(
                 { uid },
@@ -171,6 +184,8 @@ module.exports = (usersCollection) => {
     // Delete user
     router.delete('/:uid', async (req, res) => {
         try {
+            const actor = await usersCollection.findOne({ uid: req.identity.uid });
+            if (actor?.userType !== 'admin') return res.status(403).json({ success: false, message: 'Admin access required.' });
             const { uid } = req.params;
 
             const result = await usersCollection.deleteOne({ uid });

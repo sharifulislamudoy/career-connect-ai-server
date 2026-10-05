@@ -328,7 +328,7 @@ function initializeRoutes() {
   app.use("/api/ats", atsScoreRoutes);
 
   // Interview Routes
-  const interviewRoutes = require("./routes/interviews")(interviewsCollection);
+  const interviewRoutes = require("./routes/interviews")(interviewsCollection, db);
   app.use("/api/interviews", interviewRoutes);
 
   // --- UPDATED: pass usersCollection to posts route ---

@@ -1,4 +1,6 @@
 const express = require("express");
+const { ObjectId } = require("mongodb");
+const { generatePlan, languageTag } = require("../services/careerLearning");
 const { randomUUID } = require("crypto");
 const aiAuth = require("../middleware/aiAuth");
 const aiLimit = require("../middleware/aiLimit");
@@ -17,7 +19,8 @@ const route = fn => async (req, res) => {
 
 module.exports = db => {
   const router = express.Router();
-  router.use(aiAuth(db.collection("users")), aiLimit);
+  router.use(aiAuth(db.collection("users")));
+  router.use((req, res, next) => req.method === "POST" ? aiLimit(req, res, next) : next());
 
   router.post("/chat", route(async (req, res) => {
     const message = input(req.body.message, "Message");
@@ -31,7 +34,7 @@ module.exports = db => {
     const context = await loadContext(db, req.aiUser, message, req.body.jobId);
     context.HISTORY = conversation?.messages?.slice(-10) || [];
     const result = await generateJSON({ action: "career_chat", message,
-      instructions: "Recommend only relevant JOBS from context. Return their exact IDs in recommendedJobIds. Use /jobs/ID links only for supplied jobs. Available platform links: /jobs, /create-resume, /ats-score, /mock-interview, /learning-path, /settings. Never claim this selection is the complete catalogue." }, context, schemas.chat);
+      instructions: "Use current OWN_RESUME, OWN_CV, OWN_ATS, OWN_INTERVIEWS and OWN_LEARNING_PATHS as the latest evidence. Prefer current stored data over older HISTORY. Distinguish planned/self-reported learning from verified competence. When Resume and CV conflict ask which is current, rather than silently combining them. Never invent skills, merge old resume variants, or claim model training. When OWN_RESUME is absent, explain that no saved Coach-enabled resume is available if resume advice is requested. Recommend only relevant JOBS from context. Return their exact IDs in recommendedJobIds. Use /jobs/ID links only for supplied jobs. Available platform links: /jobs, /create-resume, /ats-score, /mock-interview, /learning-path, /create-cv, /settings. Never claim this selection is the complete catalogue." }, context, schemas.chat);
     assertResult(result && typeof result.reply === "string" && result.reply.trim() && validStrings(result.recommendedJobIds));
     const allowed = new Map(context.JOBS.map(job => [job.id, job]));
     const recommendations = [...new Set(result.recommendedJobIds)].filter(id => allowed.has(id)).slice(0, 6).map(id => allowed.get(id));
@@ -67,33 +70,78 @@ module.exports = db => {
     res.json({ success: true, evaluation });
   }));
 
+  router.post("/interview/start", route(async (req, res) => {
+    const topic = input(req.body.topic, "Interview topic", 200);
+    const difficulty = req.body.difficulty || "beginner";
+    const questionCount = req.body.questionCount ?? 5;
+    const language = languageTag(req.body.language);
+    const mode = ["text", "voice", "video"].includes(req.body.mode) ? req.body.mode : "voice";
+    if (!["beginner", "intermediate", "advanced"].includes(difficulty) || !Number.isInteger(questionCount) || questionCount < 3 || questionCount > 10) throw apiError(400, "Choose a level and 3–10 questions.");
+    const context = await loadContext(db, req.aiUser, topic);
+    const questions = await generateJSON({ action: "interview_questions", topic, difficulty, count: questionCount, language,
+      instructions: `Conduct an AI practice interview in ${language}. Generate exactly ${questionCount} distinct questions with 3–5 specific evaluationCriteria each. Use a natural interview flow: fundamentals, applied scenarios and trade-offs appropriate to ${difficulty}. Personalize using recorded career context without inventing experience. Keep every question under 1500 characters and each criterion under 300. Do not grade accent, identity, appearance or facial expression.` }, context, schemas.questions, 8000);
+    assertResult(Array.isArray(questions) && questions.length === questionCount && questions.every(q => typeof q.question === "string" && q.question.trim() && q.question.length <= 1500 && validStrings(q.evaluationCriteria) && q.evaluationCriteria.length >= 3 && q.evaluationCriteria.length <= 5 && q.evaluationCriteria.every(c => c.trim() && c.length <= 300)));
+    const now = new Date();
+    const session = { userId: req.aiIdentity.uid, interviewConfig: { topic, difficulty, questionCount, language, mode }, questions, answers: [], status: "in_progress", averageScore: null, coachEnabled: true, version: 0, createdAt: now, updatedAt: now };
+    const result = await db.collection("interviews").insertOne(session);
+    res.status(201).json({ success: true, session: { ...session, _id: result.insertedId } });
+  }));
+  router.post("/interview/:id/answer", route(async (req, res) => {
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) throw apiError(400, "Invalid interview ID.");
+    const collection = db.collection("interviews");
+    const filter = { _id: new ObjectId(req.params.id), userId: req.aiIdentity.uid };
+    const session = await collection.findOne(filter);
+    if (!session) throw apiError(404, "Interview not found.");
+    const index = session.answers.length;
+    if (session.status === "completed" || req.body.questionIndex !== index) throw apiError(409, "This question was already submitted. Reload the saved interview.");
+    const answer = input(req.body.answer, "Answer transcript", 10000);
+    const question = session.questions[index];
+    const context = await loadContext(db, req.aiUser, session.interviewConfig.topic);
+    const evaluation = validateAssessment(await generateJSON({ action: "interview_evaluation", question: question.question, answer, criteria: question.evaluationCriteria,
+      instructions: `Evaluate only this reviewed answer transcript, score 0–10. Respond in ${session.interviewConfig.language}. Explain specific strengths, missing concepts and an actionable next practice exercise. Calibrate to ${session.interviewConfig.difficulty}. Do not infer technical ability from accent, speech-recognition errors, video appearance or confidence. Do not award credit for absent content.` }, context, schemas.evaluation), 10);
+    const answers = [...session.answers, { questionIndex: index, question: question.question, answer, evaluation, answeredAt: new Date() }];
+    const averageScore = Math.round(answers.reduce((total, item) => total + item.evaluation.score, 0) / answers.length * 10) / 10;
+    const update = { answers, averageScore, status: answers.length === session.questions.length ? "completed" : "in_progress", updatedAt: new Date(), version: session.version + 1 };
+    const result = await collection.updateOne({ ...filter, version: session.version }, { $set: update });
+    if (!result.matchedCount) throw apiError(409, "Interview changed in another tab. Reload it before continuing.");
+    res.json({ success: true, session: { ...session, ...update } });
+  }));
   router.post("/learning-path", route(async (req, res) => {
-    const title = input(req.body.title, "Career title", 200);
-    const days = req.body.days;
-    if (![30, 60, 90, 180, 365].includes(days)) throw apiError(400, "Select a supported learning duration.");
-    const weeks = Math.ceil(days / 7);
-    const context = await loadContext(db, req.aiUser, title, req.body.jobId);
-    const data = await generateJSON({ action: "learning_path", title, days, weeks,
-      instructions: `Generate exactly ${weeks} weeklySchedule entries numbered 1–${weeks}, each with 3–5 actionable tasks, topics, a milestone and realistic hoursRequired. Include 3–6 overall milestones numbered within these weeks, each with tasks. Include 3–8 skillBreakdown entries with percentages totalling 100. Personalize learning gaps using only this user's existing skills and relevant jobs. Avoid fabricated course URLs. This is a planned schedule, not completed progress.` }, context, schemas.learning, 18000);
-    assertResult(data && Array.isArray(data.weeklySchedule) && data.weeklySchedule.length === weeks);
-    data.weeklySchedule.sort((a, b) => a.week - b.week);
-    assertResult(data.weeklySchedule.every((week, index) => week.week === index + 1 && validStrings(week.topics) && week.topics.length && validStrings(week.tasks) && week.tasks.length >= 3 && typeof week.milestone === "string" && Number.isFinite(week.hoursRequired) && week.hoursRequired > 0));
-    assertResult(Array.isArray(data.milestones) && data.milestones.length >= 3 && data.milestones.every(m => Number.isInteger(m.week) && m.week >= 1 && m.week <= weeks && typeof m.title === "string" && typeof m.description === "string" && validStrings(m.tasks) && m.tasks.length));
-    assertResult(Array.isArray(data.skillBreakdown) && data.skillBreakdown.length >= 3 && data.skillBreakdown.every(s => typeof s.skill === "string" && Number.isFinite(s.percentage) && s.percentage > 0));
-    const total = data.skillBreakdown.reduce((sum, skill) => sum + skill.percentage, 0);
-    const colors = ["#6366f1", "#14b8a6", "#f59e0b", "#ec4899", "#8b5cf6", "#0ea5e9", "#22c55e", "#f97316"];
-    const dailyTasks = Array.from({ length: days }, (_, index) => {
-      const week = data.weeklySchedule[Math.floor(index / 7)];
-      return { day: index + 1, task: week.tasks[(index % 7) % week.tasks.length], topics: week.topics,
-        resources: [], completionTime: Math.round(week.hoursRequired * 60 / Math.min(7, days - (week.week - 1) * 7)) };
-    });
-    res.json({ success: true, learningPath: {
-      title, duration: `${days} days`, totalDays: days,
-      weeklySchedule: data.weeklySchedule, dailyTasks,
-      milestones: data.milestones.map(m => ({ ...m, achieved: false })),
-      skillBreakdown: data.skillBreakdown.map((skill, index) => ({ ...skill, percentage: skill.percentage * 100 / total, color: colors[index % colors.length] })),
-      progressData: Array.from({ length: days }, (_, index) => ({ day: index + 1, progress: 0, topicsCompleted: 0 })),
-    } });
+    const skill = input(req.body.skill || req.body.title, "Skill", 200);
+    const context = await loadContext(db, req.aiUser, skill);
+    const plan = await generatePlan(req.body, context);
+    const now = new Date();
+    const doc = { ...plan, userId: req.aiIdentity.uid, createdAt: now, updatedAt: now };
+    const result = await db.collection("learning_paths").insertOne(doc);
+    res.status(201).json({ success: true, learningPath: { ...doc, _id: result.insertedId } });
+  }));
+  router.get("/learning-paths", route(async (req, res) => {
+    const plans = await db.collection("learning_paths").find({ userId: req.aiIdentity.uid }, { projection: { weeklySchedule: 0 } }).sort({ updatedAt: -1 }).limit(50).toArray();
+    res.json({ success: true, plans });
+  }));
+  router.get("/learning-path/:id", route(async (req, res) => {
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) throw apiError(400, "Invalid learning path ID.");
+    const plan = await db.collection("learning_paths").findOne({ _id: new ObjectId(req.params.id), userId: req.aiIdentity.uid });
+    if (!plan) throw apiError(404, "Learning path not found.");
+    res.json({ success: true, learningPath: plan });
+  }));
+  router.patch("/learning-path/:id/progress", route(async (req, res) => {
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) throw apiError(400, "Invalid learning path ID.");
+    const collection = db.collection("learning_paths"); const filter = { _id: new ObjectId(req.params.id), userId: req.aiIdentity.uid };
+    const plan = await collection.findOne(filter); if (!plan) throw apiError(404, "Learning path not found.");
+    const taskId = req.body.taskId;
+    if (typeof req.body.completed !== "boolean" || !plan.weeklySchedule.some(week => week.tasks.some(task => task.id === taskId))) throw apiError(400, "Select a valid task and completion state.");
+    const completed = new Set(plan.completedTaskIds || []); req.body.completed ? completed.add(taskId) : completed.delete(taskId);
+    const update = { completedTaskIds: [...completed], updatedAt: new Date(), version: plan.version + 1 };
+    const result = await collection.updateOne({ ...filter, version: plan.version }, { $set: update });
+    if (!result.matchedCount) throw apiError(409, "Progress changed in another tab. Reload this plan.");
+    res.json({ success: true, learningPath: { ...plan, ...update } });
+  }));
+  router.delete("/learning-path/:id", route(async (req, res) => {
+    if (!/^[a-f0-9]{24}$/i.test(req.params.id)) throw apiError(400, "Invalid learning path ID.");
+    const result = await db.collection("learning_paths").deleteOne({ _id: new ObjectId(req.params.id), userId: req.aiIdentity.uid });
+    if (!result.deletedCount) throw apiError(404, "Learning path not found.");
+    res.json({ success: true });
   }));
   return router;
 };

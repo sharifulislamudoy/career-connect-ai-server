@@ -19,13 +19,19 @@ module.exports = (users, payments, db) => {
   );
   router.get(
     "/status",
-    handle(async (req, res) =>
+    handle(async (req, res) => {
+      if (req.member.stripeCustomerId)
+        await billing.syncCustomer(db, req.member.stripeCustomerId, {
+          recover: true,
+        });
+      const member = await users.findOne({ uid: req.identity.uid });
       res.json({
         success: true,
-        ...(await snapshot(db, req.member)),
-        cancelAtPeriodEnd: req.member.cancelAtPeriodEnd || false,
-      }),
-    ),
+        ...(await snapshot(db, member)),
+        billingCycle: member.billingCycle || null,
+        cancelAtPeriodEnd: member.cancelAtPeriodEnd || false,
+      });
+    }),
   );
   router.post(
     "/checkout",
@@ -44,13 +50,7 @@ module.exports = (users, payments, db) => {
   router.post(
     "/portal",
     handle(async (req, res) => {
-      if (!req.member.stripeCustomerId)
-        return res.status(400).json({ error: "No billing account yet." });
-      const session = await billing.stripe().billingPortal.sessions.create({
-        customer: req.member.stripeCustomerId,
-        return_url: `${new URL(process.env.APP_URL || "http://localhost:5173").origin}/pricing`,
-      });
-      res.json({ success: true, url: session.url });
+      res.json({ success: true, url: await billing.portal(req.member) });
     }),
   );
   router.get(

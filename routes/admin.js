@@ -19,6 +19,7 @@ module.exports = (
 
   router.use(auth);
   router.use(roleCheck("admin", "moderator"));
+  router.use((req,res,next) => {const module=req.path.startsWith("/jobs")?"jobs":req.path.startsWith("/users")?"users":"reports";return require("../services/staff").permit(module)(req,res,next);});
 
   // ---------- DASHBOARD STATS ----------
   router.get("/dashboard", async (req, res) => {
@@ -119,7 +120,7 @@ module.exports = (
   // ---------- USER MANAGEMENT ----------
   router.get("/users", async (req, res) => {
     try {
-      const users = await usersCollection.find({}).toArray();
+      const users = await usersCollection.find({}, {projection:{workspaceLock:0,devices:0}}).toArray();
       res.json({ success: true, users });
     } catch (error) {
       console.error("Error fetching users:", error);
@@ -130,7 +131,7 @@ module.exports = (
   router.get("/users/:uid", async (req, res) => {
     try {
       const { uid } = req.params;
-      const user = await usersCollection.findOne({ uid });
+      const user = await usersCollection.findOne({ uid },{projection:{workspaceLock:0,devices:0}});
       if (!user) {
         return res
           .status(404)
@@ -144,6 +145,7 @@ module.exports = (
   });
 
   router.put("/users/:uid/role", async (req, res) => {
+    if(req.user.userType!=="admin")return res.status(403).json({error:"Only admins can change roles."});
     try {
       const { uid } = req.params;
       const { newRole } = req.body;

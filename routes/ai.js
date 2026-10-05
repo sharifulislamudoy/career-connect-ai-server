@@ -75,7 +75,7 @@ module.exports = db => {
     const difficulty = req.body.difficulty || "beginner";
     const questionCount = req.body.questionCount ?? 5;
     const language = languageTag(req.body.language);
-    const mode = ["text", "voice", "video"].includes(req.body.mode) ? req.body.mode : "voice";
+    const mode = ["text", "voice", "video"].includes(req.body.mode) ? req.body.mode : "text";
     if (!["beginner", "intermediate", "advanced"].includes(difficulty) || !Number.isInteger(questionCount) || questionCount < 3 || questionCount > 10) throw apiError(400, "Choose a level and 3–10 questions.");
     const context = await loadContext(db, req.aiUser, topic);
     const questions = await generateJSON({ action: "interview_questions", topic, difficulty, count: questionCount, language,

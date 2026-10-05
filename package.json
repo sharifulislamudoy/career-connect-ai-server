@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/workspace.test.js",
+    "stripe:catalog": "node scripts/setup-stripe-catalog.js"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +26,6 @@
     "pdf2json": "^4.0.0",
     "pdfkit": "^0.17.2",
     "socket.io": "^4.8.1",
-    "stripe": "^19.3.1"
+    "stripe": "^23.0.0"
   }
 }

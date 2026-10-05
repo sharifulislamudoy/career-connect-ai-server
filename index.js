@@ -25,7 +25,8 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json());
+app.post("/api/payments/webhook", express.raw({ type: "application/json", limit: "2mb" }), require("./services/billing").webhook(() => db));
+app.use(express.json({ limit: "256kb" }));
 
 // MongoDB connection
 const uri = process.env.MONGODB_URI;
@@ -70,12 +71,17 @@ io.use(async (socket, next) => {
   try {
     const { getFirebaseAuth } = require("./middleware/aiAuth");
     const identity = await getFirebaseAuth().verifyIdToken(socket.handshake.auth?.token || "", true);
+    const user = await usersCollection.findOne({ uid: identity.uid });
+    const device = require("./services/devices");
+    if (device.restricted(user) || !device.validDevice(user, socket.handshake.auth.deviceId, socket.handshake.auth.deviceToken)) return next(new Error("Account or device is restricted."));
     socket.data.uid = identity.uid;
     next();
   } catch { next(new Error("Please sign in again to connect.")); }
 });
 
 io.on("connection", (socket) => {
+  socket.join(`account_${socket.data.uid}`);
+  socket.use(async (_packet,next) => { try { const user=await usersCollection.findOne({uid:socket.data.uid}); const d=require("./services/devices"); if(d.restricted(user)||!d.validDevice(user,socket.handshake.auth.deviceId,socket.handshake.auth.deviceToken)){socket.disconnect(true);return;}next();}catch{socket.disconnect(true);} });
   console.log("New client connected:", socket.id);
 
   socket.on("user-online", async (userId) => {
@@ -265,6 +271,9 @@ async function run() {
     await client.db("admin").command({ ping: 1 });
     console.log("✅ Successfully connected to MongoDB!");
 
+    await require("./services/initWorkspace")(db);
+    require("./services/mailQueue").startMailWorker(db);
+    require("./services/careerWorkers").startCareerWorkers(db);
     initializeRoutes();
   } catch (err) {
     console.error("❌ MongoDB connection failed:", err);
@@ -278,6 +287,13 @@ function initializeRoutes() {
     if (req.path === "/auth" || req.path.startsWith("/auth/")) return next();
     return require("./middleware/memberSession")(req, res, next);
   });
+  app.use("/api/account", require("./routes/account")(db, io));
+  app.use("/api", (req,res,next) => req.path.startsWith("/auth/") ? next() : require("./services/devices").guard(db)(req,res,next));
+  app.use("/api", require("./middleware/entitlements")(db));
+  app.use("/api/tools", require("./routes/careerTools")(db));
+  app.use("/api/workspace", require("./routes/workspace")(db));
+  app.use("/api/job-alerts", require("./routes/jobAlerts")(db));
+  app.use("/api/admin/reports", require("./routes/adminReports")(db,io));
   // Auth middleware (factory)
   const authMiddleware = require("./middleware/auth")(usersCollection);
 
@@ -317,7 +333,7 @@ function initializeRoutes() {
   // Payment Routes
   const paymentRoutes = require("./routes/payments")(
     usersCollection,
-    paymentsCollection
+    paymentsCollection, db
   );
   app.use("/api/payments", paymentRoutes);
 

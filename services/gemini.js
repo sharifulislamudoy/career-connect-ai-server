@@ -165,6 +165,7 @@ async function generateJSON(
     );
   }
 
+  require("./usage").addProviderUsage(payload?.usageMetadata);
   const candidate = payload?.candidates?.[0];
 
   if (

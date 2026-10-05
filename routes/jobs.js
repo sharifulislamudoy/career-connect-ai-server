@@ -107,7 +107,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   // POST: Create a new job (always sets isVerified = false)
   router.post('/', async (req, res) => {
     try {
-      const jobData = req.body;
+      const jobData = { ...req.body, recruiterId: req.identity.uid };
       const requiredFields = ['title', 'company', 'location', 'description', 'recruiterId'];
       for (const field of requiredFields) {
         if (!jobData[field]) {
@@ -221,7 +221,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
           message: 'Job not found'
         });
       }
-      if (job.recruiterId !== recruiterId) {
+      if (job.recruiterId !== req.identity.uid) {
         return res.status(403).json({
           success: false,
           message: 'Unauthorized to edit this job'
@@ -245,7 +245,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   router.put('/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      const updateData = req.body;
+      const updateData = Object.fromEntries(Object.entries(req.body).filter(([k])=>!['_id','recruiterId','isVerified','verifiedBy','verifiedAt','applicants','createdAt'].includes(k)&&!k.startsWith('$')&&!k.includes('.')));
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({
           success: false,
@@ -259,7 +259,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
           message: 'Job not found'
         });
       }
-      if (existingJob.recruiterId !== updateData.recruiterId) {
+      if (existingJob.recruiterId !== req.identity.uid) {
         return res.status(403).json({
           success: false,
           message: 'Unauthorized to update this job'
@@ -309,7 +309,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
           message: 'Job not found'
         });
       }
-      if (job.recruiterId !== recruiterId) {
+      if (job.recruiterId !== req.identity.uid) {
         return res.status(403).json({
           success: false,
           message: 'Unauthorized to delete this job'
@@ -337,7 +337,8 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   router.post('/:jobId/apply', async (req, res) => {
     try {
       const { jobId } = req.params;
-      const applicationData = req.body;
+      const applicationData = { ...req.body, jobSeekerId: req.identity.uid, email: req.identity.email };
+      if(req.member.userType !== 'jobSeeker')return res.status(403).json({error:'Only job seekers can apply.'});
       if (!applicationData.jobSeekerId || !applicationData.email || !applicationData.fullName) {
         return res.status(400).json({
           success: false,
@@ -374,8 +375,8 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
         });
       }
       const newApplication = {
-        jobId,
         ...applicationData,
+        jobId,
         status: 'pending',
         appliedAt: new Date(),
         updatedAt: new Date()
@@ -412,7 +413,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
         });
       }
       const job = await jobsCollection.findOne({ _id: new ObjectId(jobId) });
-      if (!job || job.recruiterId !== recruiterId) {
+      if (!job || job.recruiterId !== req.identity.uid) {
         return res.status(403).json({
           success: false,
           message: 'Unauthorized to view applications for this job'
@@ -442,6 +443,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   router.get('/applied/:jobSeekerId', async (req, res) => {
     try {
       const { jobSeekerId } = req.params;
+      if(jobSeekerId !== req.identity.uid && !['admin','moderator'].includes(req.member.userType))return res.status(403).json({error:'Own applications only.'});
       const applications = await applicationsCollection
         .find({ jobSeekerId })
         .sort({ appliedAt: -1 })
@@ -477,7 +479,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
   router.get('/applications/:applicationId', async (req, res) => {
     try {
       const { applicationId } = req.params;
-      const { userId, userType } = req.query;
+      const userId = req.identity.uid; const userType = req.member.userType;
       if (!ObjectId.isValid(applicationId)) {
         return res.status(400).json({
           success: false,
@@ -508,6 +510,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
           });
         }
       }
+      if (!['jobSeeker','recruiter'].includes(userType) && !require('../services/staff').allowed(req.member,'users')) return res.status(403).json({error:'Application access denied.'});
       const job = await jobsCollection.findOne({ _id: new ObjectId(application.jobId) });
       res.json({
         success: true,
@@ -553,7 +556,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
         });
       }
       const job = await jobsCollection.findOne({ _id: new ObjectId(application.jobId) });
-      if (!job || job.recruiterId !== recruiterId) {
+      if (!job || job.recruiterId !== req.identity.uid) {
         return res.status(403).json({
           success: false,
           message: 'Unauthorized to update this application'
@@ -618,7 +621,7 @@ module.exports = (jobsCollection, applicationsCollection, usersCollection) => {
           message: 'Job not found'
         });
       }
-      if (job.recruiterId !== recruiterId) {
+      if (job.recruiterId !== req.identity.uid) {
         return res.status(403).json({
           success: false,
           message: 'Unauthorized to update this job'

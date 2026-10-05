@@ -49,7 +49,7 @@ module.exports = (usersCollection) => {
                     }
                 );
 
-                const updatedUser = await usersCollection.findOne({ uid: userData.uid });
+                const updatedUser = await usersCollection.findOne({ uid: userData.uid }, {projection:{workspaceLock:0,devices:0}});
 
                 return res.json({
                     success: true,
@@ -67,12 +67,13 @@ module.exports = (usersCollection) => {
                     updatedAt: new Date()
                 };
 
-                const result = await usersCollection.insertOne(newUser);
+                const result = await usersCollection.updateOne({uid: userData.uid}, {$setOnInsert: newUser}, {upsert:true});
+                const storedUser=await usersCollection.findOne({uid:userData.uid},{projection:{devices:0,workspaceLock:0}});
 
                 return res.json({
                     success: true,
                     message: 'User created successfully',
-                    user: { ...newUser, _id: result.insertedId }
+                    user: storedUser
                 });
             }
         } catch (error) {
@@ -91,8 +92,8 @@ module.exports = (usersCollection) => {
             const { uid } = req.params;
 
             const actor = await usersCollection.findOne({ uid: req.identity.uid });
-            const ownOrStaff = uid === req.identity.uid || ['admin', 'moderator'].includes(actor?.userType);
-            const projection = ownOrStaff ? {} : { uid: 1, displayName: 1, photoURL: 1, profession: 1, location: 1, bio: 1, skills: 1, experience: 1, education: 1, userType: 1, profileCompleted: 1 };
+            const ownOrStaff = uid === req.identity.uid || require('../services/staff').allowed(actor, 'users');
+            const projection = ownOrStaff ? {workspaceLock:0,devices:0} : { uid: 1, displayName: 1, photoURL: 1, profession: 1, location: 1, bio: 1, skills: 1, experience: 1, education: 1, userType: 1, profileCompleted: 1 };
             const user = await usersCollection.findOne({ uid }, { projection });
 
             if (!user) {
@@ -120,8 +121,8 @@ module.exports = (usersCollection) => {
     router.get('/', async (req, res) => {
         try {
             const actor = await usersCollection.findOne({ uid: req.identity.uid });
-            const staff = ['admin', 'moderator'].includes(actor?.userType);
-            const projection = staff ? {} : { uid: 1, displayName: 1, photoURL: 1, profession: 1, location: 1, bio: 1, skills: 1, experience: 1, education: 1, userType: 1, profileCompleted: 1 };
+            const staff = require('../services/staff').allowed(actor, 'users');
+            const projection = staff ? {workspaceLock:0,devices:0} : { uid: 1, displayName: 1, photoURL: 1, profession: 1, location: 1, bio: 1, skills: 1, experience: 1, education: 1, userType: 1, profileCompleted: 1 };
             const users = await usersCollection.find({}, { projection }).toArray();
 
             res.json({
@@ -144,7 +145,7 @@ module.exports = (usersCollection) => {
         try {
             const { uid } = req.params;
             if (uid !== req.identity.uid) return res.status(403).json({ success: false, message: "You can only update your own profile." });
-            const protectedFields = new Set(["_id", "uid", "email", "userType", "role", "package", "packageExpiry", "createdAt", "isBlocked", "isBanned", "status"]);
+            const protectedFields = new Set(["_id", "uid", "email", "userType", "role", "package", "packageExpiry", "createdAt", "isBlocked", "isBanned", "status", "devices", "workspaceLock", "stripeCustomerId", "stripeSubscriptionId", "subscriptionStatus", "billingCycle", "cancelAtPeriodEnd", "moderatorModules", "banId", "banReason", "bannedAt", "reopenedAt"]);
             const updateData = Object.fromEntries(Object.entries(req.body).filter(([key]) => !protectedFields.has(key) && !key.startsWith("$") && !key.includes(".")));
 
             const result = await usersCollection.updateOne(
@@ -164,7 +165,7 @@ module.exports = (usersCollection) => {
                 });
             }
 
-            const updatedUser = await usersCollection.findOne({ uid });
+            const updatedUser = await usersCollection.findOne({ uid }, {projection:{workspaceLock:0,devices:0}});
 
             res.json({
                 success: true,

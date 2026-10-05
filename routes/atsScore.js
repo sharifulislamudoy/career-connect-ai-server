@@ -52,7 +52,7 @@ module.exports = (collection, db) => {
       fileName: req.file.originalname
     });
   }));
-  router.post('/check-score', aiLimit, upload.single('resume'), handle(async (req, res) => {
+  router.post('/check-score', aiLimit, upload.single('resume'), require('../services/usage').gate(db, req => ({ features: ['ats', ...(String(req.body.jobDescription || '').trim() || String(req.body.targetKeywords || '').trim() ? ['atsJob'] : [])] })), handle(async (req, res) => {
     let resumeText = req.body.resumeText;
     let links = [];
     if (Array.isArray(req.body.links)) links = req.body.links.slice(0, 200).filter(link => link && typeof link.url === 'string' && /^(https?:\/\/|mailto:)/i.test(link.url)).map(link => ({ url: link.url.slice(0, 3000), page: Number.isInteger(link.page) ? link.page : null }));

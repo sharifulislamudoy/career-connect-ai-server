@@ -15,6 +15,10 @@ function normalizeResume(body = {}) {
   const personal = Object.fromEntries(['name', 'title', 'email', 'phone', 'location', 'website', 'github', 'linkedin', 'summary'].map(key => [key, string(body.personal?.[key])]));
   const documentType = body.documentType === 'cv' ? 'cv' : 'resume';
   const data = { personal, documentType, photoUrl: documentType === 'cv' ? string(body.photoUrl, 3000) : '', title: string(body.title, 150) || `${personal.name || 'Untitled'} - ${documentType === 'cv' ? 'CV' : 'Resume'}`, coachEnabled: body.coachEnabled !== false };
+  data.template = ['ats','professional','compact'].includes(body.template) ? body.template : 'ats';
+  data.customStyle = {};
+  if (body.customStyle?.accent && /^#[0-9a-f]{6}$/i.test(body.customStyle.accent)) data.customStyle.accent = body.customStyle.accent;
+  if ([9,10,11].includes(Number(body.customStyle?.fontSize))) data.customStyle.fontSize = Number(body.customStyle.fontSize);
   for (const [section, keys] of Object.entries(fields)) {
     if (body[section] !== undefined && !Array.isArray(body[section])) throw new Error(`${section} must be an array.`);
     if ((body[section]?.length || 0) > 30) throw new Error(`Use at most 30 ${section} entries.`);
@@ -53,15 +57,18 @@ function linkRowSize(doc, links, width) {
 function createResumePDF(data, { photoBuffer } = {}) {
   const doc = new PDFDocument({ size: 'A4', margin: 40, info: { Title: data.title, Author: data.personal.name } });
   const width = doc.page.width - 80;
+  const baseSize = data.customStyle?.fontSize || (data.template === 'compact' ? 9 : 10);
+  const accent = data.customStyle?.accent || (data.template === 'professional' ? '#1d4ed8' : '#111111');
+  const sectionGap = data.template === 'compact' ? 0.4 : 0.65;
   data.projects.forEach(project => linkRowSize(doc, project.links, width));
   const ensure = height => { if (doc.y + height > doc.page.height - 40) doc.addPage(); };
-  const line = (value, bold = false, size = 10, textWidth = width) => {
+  const line = (value, bold = false, size = baseSize, textWidth = width) => {
     if (!value) return;
-    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(size).fillColor('#111111');
+    doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(size).fillColor(bold && size === 11 ? accent : '#111111');
     ensure(Math.min(doc.heightOfString(value, { width: textWidth, lineGap: 2 }), 90));
     doc.text(value, 40, doc.y, { width: textWidth, lineGap: 2 });
   };
-  const heading = title => { ensure(65); doc.moveDown(0.65); line(title, true, 11); doc.moveTo(40, doc.y + 2).lineTo(doc.page.width - 40, doc.y + 2).strokeColor('#8a8a8a').lineWidth(0.5).stroke(); doc.y += 7; };
+  const heading = title => { ensure(65); doc.moveDown(sectionGap); line(title, true, 11); doc.fillColor(accent); doc.moveTo(40, doc.y + 2).lineTo(doc.page.width - 40, doc.y + 2).strokeColor(data.template === 'professional' ? accent : '#8a8a8a').lineWidth(0.5).stroke(); doc.y += 7; };
   const contactLink = (label, url, textWidth) => { if (url) { doc.font('Helvetica').fontSize(9); ensure(doc.heightOfString(`${label}: ${url}`, { width: textWidth })); doc.fillColor('#174ea6').text(`${label}: ${url}`, 40, doc.y, { width: textWidth, link: url, lineGap: 2 }); } };
   const bullets = text => text.split('\n').map(s => s.replace(/^\s*[•●*-]\s*/, '').trim()).filter(Boolean).forEach(s => line(`• ${s}`));
   const linkRow = links => {

@@ -8,7 +8,10 @@ require("dotenv").config();
 const app = express();
 const server = http.createServer(app);
 const port = process.env.PORT || 5000;
-const allowedOrigins = (process.env.CLIENT_ORIGINS || "http://localhost:5173").split(",").map(value => value.trim()).filter(Boolean);
+const allowedOrigins = (process.env.CLIENT_ORIGINS || "http://localhost:5173")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 
 // Socket.io configuration
 const io = new Server(server, {
@@ -23,17 +26,27 @@ app.use(
   cors({
     origin: allowedOrigins,
     credentials: true,
-  })
+  }),
 );
 // A demo deployment never accepts payment or email delivery actions.
 app.use("/api", (req, res, next) => {
-  if (process.env.DEMO_MODE === "true" && (
-    (req.path.startsWith("/payments") && req.method !== "GET") ||
-    req.path === "/auth/send-code"
-  )) return res.status(403).json({ error: "Payments and verification emails are disabled in the demo." });
+  if (
+    process.env.DEMO_MODE === "true" &&
+    ((req.path.startsWith("/payments") && req.method !== "GET") ||
+      req.path === "/auth/send-code")
+  )
+    return res
+      .status(403)
+      .json({
+        error: "Payments and verification emails are disabled in the demo.",
+      });
   next();
 });
-app.post("/api/payments/webhook", express.raw({ type: "application/json", limit: "2mb" }), require("./services/billing").webhook(() => db));
+app.post(
+  "/api/payments/webhook",
+  express.raw({ type: "application/json", limit: "2mb" }),
+  require("./services/billing").webhook(() => db),
+);
 app.use(express.json({ limit: "256kb" }));
 
 // MongoDB connection
@@ -75,21 +88,54 @@ async function getUnreadCount(userId) {
 }
 
 io.use(async (socket, next) => {
-  if (!usersCollection || !notificationsCollection) return next(new Error("Service is starting. Try again shortly."));
+  if (!usersCollection || !notificationsCollection)
+    return next(new Error("Service is starting. Try again shortly."));
   try {
     const { getFirebaseAuth } = require("./middleware/aiAuth");
-    const identity = await getFirebaseAuth().verifyIdToken(socket.handshake.auth?.token || "", true);
+    const identity = await getFirebaseAuth().verifyIdToken(
+      socket.handshake.auth?.token || "",
+      true,
+    );
     const user = await usersCollection.findOne({ uid: identity.uid });
     const device = require("./services/devices");
-    if (device.restricted(user) || !device.validDevice(user, socket.handshake.auth.deviceId, socket.handshake.auth.deviceToken)) return next(new Error("Account or device is restricted."));
+    if (
+      device.restricted(user) ||
+      !device.validDevice(
+        user,
+        socket.handshake.auth.deviceId,
+        socket.handshake.auth.deviceToken,
+      )
+    )
+      return next(new Error("Account or device is restricted."));
     socket.data.uid = identity.uid;
     next();
-  } catch { next(new Error("Please sign in again to connect.")); }
+  } catch {
+    next(new Error("Please sign in again to connect."));
+  }
 });
 
 io.on("connection", (socket) => {
   socket.join(`account_${socket.data.uid}`);
-  socket.use(async (_packet,next) => { try { const user=await usersCollection.findOne({uid:socket.data.uid}); const d=require("./services/devices"); if(d.restricted(user)||!d.validDevice(user,socket.handshake.auth.deviceId,socket.handshake.auth.deviceToken)){socket.disconnect(true);return;}next();}catch{socket.disconnect(true);} });
+  socket.use(async (_packet, next) => {
+    try {
+      const user = await usersCollection.findOne({ uid: socket.data.uid });
+      const d = require("./services/devices");
+      if (
+        d.restricted(user) ||
+        !d.validDevice(
+          user,
+          socket.handshake.auth.deviceId,
+          socket.handshake.auth.deviceToken,
+        )
+      ) {
+        socket.disconnect(true);
+        return;
+      }
+      next();
+    } catch {
+      socket.disconnect(true);
+    }
+  });
   console.log("New client connected:", socket.id);
 
   socket.on("user-online", async (userId) => {
@@ -112,9 +158,17 @@ io.on("connection", (socket) => {
     try {
       const [first, second] = String(conversationId).split("_");
       if (![first, second].includes(socket.data.uid)) return;
-      const connection = await connectionsCollection.findOne({ status: "accepted", $or: [{ senderId: first, receiverId: second }, { senderId: second, receiverId: first }] });
+      const connection = await connectionsCollection.findOne({
+        status: "accepted",
+        $or: [
+          { senderId: first, receiverId: second },
+          { senderId: second, receiverId: first },
+        ],
+      });
       if (!connection) return;
-    } catch { return; }
+    } catch {
+      return;
+    }
     socket.join(conversationId);
     console.log(`Socket ${socket.id} joined conversation ${conversationId}`);
   });
@@ -128,9 +182,20 @@ io.on("connection", (socket) => {
     try {
       const { conversationId, receiverId, content } = data;
       const senderId = socket.data.uid;
-      if (typeof content !== "string" || !content.trim() || content.length > 10000) return;
+      if (
+        typeof content !== "string" ||
+        !content.trim() ||
+        content.length > 10000
+      )
+        return;
       if (conversationId !== [senderId, receiverId].sort().join("_")) return;
-      const connection = await connectionsCollection.findOne({ status: "accepted", $or: [{ senderId, receiverId }, { senderId: receiverId, receiverId: senderId }] });
+      const connection = await connectionsCollection.findOne({
+        status: "accepted",
+        $or: [
+          { senderId, receiverId },
+          { senderId: receiverId, receiverId: senderId },
+        ],
+      });
       if (!connection) return;
 
       const message = {
@@ -151,7 +216,8 @@ io.on("connection", (socket) => {
         userId: receiverId,
         type: "new_message",
         title: "New Message",
-        message: content.substring(0, 100) + (content.length > 100 ? "..." : ""),
+        message:
+          content.substring(0, 100) + (content.length > 100 ? "..." : ""),
         senderId,
         senderName: sender?.displayName || "Someone",
         senderPhotoURL: sender?.photoURL,
@@ -168,11 +234,14 @@ io.on("connection", (socket) => {
         io.to(receiverSocketId).emit("new-notification", notification);
         io.to(`notifications_${receiverId}`).emit(
           "notification-count",
-          await getUnreadCount(receiverId)
+          await getUnreadCount(receiverId),
         );
       }
 
-      io.to(conversationId).emit("receive-message", message);
+      io.to(conversationId)
+        .to(`account_${senderId}`)
+        .to(`account_${receiverId}`)
+        .emit("receive-message", message);
       socket.emit("message-sent", message);
     } catch (error) {
       console.error("Error sending message:", error);
@@ -203,10 +272,12 @@ io.on("connection", (socket) => {
         },
         {
           $set: { read: true, readAt: new Date() },
-        }
+        },
       );
 
-      socket.to(conversationId).emit("messages-read", { userId });
+      socket
+        .to(conversationId)
+        .emit("messages-read", { userId, conversationId });
     } catch (error) {
       console.error("Error marking messages as read:", error);
     }
@@ -219,12 +290,12 @@ io.on("connection", (socket) => {
 
       await notificationsCollection.updateOne(
         { _id: new ObjectId(notificationId), userId },
-        { $set: { read: true, readAt: new Date() } }
+        { $set: { read: true, readAt: new Date() } },
       );
 
       io.to(`notifications_${userId}`).emit(
         "notification-count",
-        await getUnreadCount(userId)
+        await getUnreadCount(userId),
       );
     } catch (error) {
       console.error("Error marking notification as read:", error);
@@ -237,7 +308,7 @@ io.on("connection", (socket) => {
 
       await notificationsCollection.updateMany(
         { userId, read: false },
-        { $set: { read: true, readAt: new Date() } }
+        { $set: { read: true, readAt: new Date() } },
       );
 
       io.to(`notifications_${userId}`).emit("notification-count", 0);
@@ -301,12 +372,16 @@ function initializeRoutes() {
     return require("./middleware/memberSession")(req, res, next);
   });
   app.use("/api/account", require("./routes/account")(db, io));
-  app.use("/api", (req,res,next) => req.path.startsWith("/auth/") ? next() : require("./services/devices").guard(db)(req,res,next));
+  app.use("/api", (req, res, next) =>
+    req.path.startsWith("/auth/")
+      ? next()
+      : require("./services/devices").guard(db)(req, res, next),
+  );
   app.use("/api", require("./middleware/entitlements")(db));
   app.use("/api/tools", require("./routes/careerTools")(db));
   app.use("/api/workspace", require("./routes/workspace")(db));
   app.use("/api/job-alerts", require("./routes/jobAlerts")(db));
-  app.use("/api/admin/reports", require("./routes/adminReports")(db,io));
+  app.use("/api/admin/reports", require("./routes/adminReports")(db, io));
   // Auth middleware (factory)
   const authMiddleware = require("./middleware/auth")(usersCollection);
 
@@ -324,7 +399,7 @@ function initializeRoutes() {
   const connectionRoutes = require("./routes/connections")(
     usersCollection,
     connectionsCollection,
-    notificationsCollection
+    notificationsCollection,
   );
   app.use("/api/connections", connectionRoutes);
 
@@ -332,21 +407,24 @@ function initializeRoutes() {
   const messageRoutes = require("./routes/messages")(
     usersCollection,
     connectionsCollection,
-    messagesCollection
+    messagesCollection,
+    io,
+    notificationsCollection,
   );
   app.use("/api/messages", messageRoutes);
 
   // Notifications Routes
   const notificationRoutes = require("./routes/notifications")(
     usersCollection,
-    notificationsCollection
+    notificationsCollection,
   );
   app.use("/api/notifications", notificationRoutes);
 
   // Payment Routes
   const paymentRoutes = require("./routes/payments")(
     usersCollection,
-    paymentsCollection, db
+    paymentsCollection,
+    db,
   );
   app.use("/api/payments", paymentRoutes);
 
@@ -357,17 +435,23 @@ function initializeRoutes() {
   app.use("/api/ats", atsScoreRoutes);
 
   // Interview Routes
-  const interviewRoutes = require("./routes/interviews")(interviewsCollection, db);
+  const interviewRoutes = require("./routes/interviews")(
+    interviewsCollection,
+    db,
+  );
   app.use("/api/interviews", interviewRoutes);
 
   // --- UPDATED: pass usersCollection to posts route ---
-  const postRoutes = require("./routes/posts")(postsCollection, usersCollection);
+  const postRoutes = require("./routes/posts")(
+    postsCollection,
+    usersCollection,
+  );
   app.use("/api/posts", postRoutes);
 
   const jobRoutes = require("./routes/jobs")(
     jobsCollection,
     applicationsCollection,
-    usersCollection
+    usersCollection,
   );
   app.use("/api/jobs", jobRoutes);
 
@@ -384,7 +468,7 @@ function initializeRoutes() {
     paymentsCollection,
     interviewsCollection,
     io,
-    onlineUsers
+    onlineUsers,
   );
   app.use("/api/admin", adminRoutes);
 

@@ -25,6 +25,14 @@ app.use(
     credentials: true,
   })
 );
+// A demo deployment never accepts payment or email delivery actions.
+app.use("/api", (req, res, next) => {
+  if (process.env.DEMO_MODE === "true" && (
+    (req.path.startsWith("/payments") && req.method !== "GET") ||
+    req.path === "/auth/send-code"
+  )) return res.status(403).json({ error: "Payments and verification emails are disabled in the demo." });
+  next();
+});
 app.post("/api/payments/webhook", express.raw({ type: "application/json", limit: "2mb" }), require("./services/billing").webhook(() => db));
 app.use(express.json({ limit: "256kb" }));
 
@@ -272,8 +280,12 @@ async function run() {
     console.log("✅ Successfully connected to MongoDB!");
 
     await require("./services/initWorkspace")(db);
-    require("./services/mailQueue").startMailWorker(db);
-    require("./services/careerWorkers").startCareerWorkers(db);
+    require("./routes/demo").assertDemoIsolation(db);
+    await require("./routes/demo").seedDemo(db);
+    if (process.env.DEMO_MODE !== "true") {
+      require("./services/mailQueue").startMailWorker(db);
+      require("./services/careerWorkers").startCareerWorkers(db);
+    }
     initializeRoutes();
   } catch (err) {
     console.error("❌ MongoDB connection failed:", err);
@@ -282,6 +294,7 @@ async function run() {
 }
 
 function initializeRoutes() {
+  app.use("/api/auth/demo", require("./routes/demo")(db));
   // Only verification endpoints are public. Member data requires a verified session.
   app.use("/api", (req, res, next) => {
     if (req.path === "/auth" || req.path.startsWith("/auth/")) return next();

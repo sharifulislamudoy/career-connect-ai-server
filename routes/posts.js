@@ -13,6 +13,36 @@ module.exports = (postsCollection, usersCollection) => {
         next();
     });
 
+    // Read current public author fields in one query, never per post/comment.
+    const withCurrentProfiles = async (posts) => {
+        const ids = [...new Set(posts.flatMap(post => [
+            post.userId,
+            ...(Array.isArray(post.comments) ? post.comments : []).map(comment => comment.userId)
+        ]).filter(id => typeof id === 'string' && id))];
+        const profiles = ids.length ? await usersCollection.find(
+            { uid: { $in: ids } },
+            { projection: { _id: 0, uid: 1, displayName: 1, photoURL: 1, profession: 1 } }
+        ).toArray() : [];
+        const byId = new Map(profiles.map(profile => [profile.uid, profile]));
+        const publicProfile = (entry) => {
+            const current = byId.get(entry.userId);
+            return current ? {
+                displayName: current.displayName || 'Member',
+                // An empty current photo means removed; never restore an old snapshot.
+                photoURL: current.photoURL || '',
+                profession: current.profession || ''
+            } : { displayName: entry.userProfile?.displayName || 'Member', photoURL: '', profession: entry.userProfile?.profession || '' };
+        };
+        return posts.map(post => ({
+            ...post,
+            userProfile: publicProfile(post),
+            likes: Array.isArray(post.likes) ? post.likes : [],
+            comments: (Array.isArray(post.comments) ? post.comments : []).map(comment => ({
+                ...comment, userProfile: publicProfile(comment)
+            }))
+        }));
+    };
+
     // Helper: extract keywords from user profile
     const extractUserKeywords = (user) => {
         const text = (user.profession || '') + ' ' + (user.bio || '');
@@ -31,6 +61,8 @@ module.exports = (postsCollection, usersCollection) => {
         return score;
     };
 
+    router.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
+
     // GET all posts with personalized sorting
     router.get('/', async (req, res) => {
         try {
@@ -48,7 +80,8 @@ module.exports = (postsCollection, usersCollection) => {
                 .find({})
                 .toArray();
 
-            const sanitized = posts.map(post => ({
+            const hydrated = await withCurrentProfiles(posts);
+            const sanitized = hydrated.map(post => ({
                 ...post,
                 likes: Array.isArray(post.likes) ? post.likes : [],
                 comments: Array.isArray(post.comments) ? post.comments : [],
@@ -106,7 +139,7 @@ module.exports = (postsCollection, usersCollection) => {
             res.json({
                 success: true,
                 message: 'Post created successfully',
-                post: createdPost
+                post: (await withCurrentProfiles([createdPost]))[0]
             });
         } catch (error) {
             console.error('Error creating post:', error);
@@ -155,11 +188,7 @@ module.exports = (postsCollection, usersCollection) => {
             res.json({
                 success: true,
                 message: alreadyLiked ? 'Post unliked' : 'Post liked',
-                post: {
-                    ...updatedPost,
-                    likes: Array.isArray(updatedPost.likes) ? updatedPost.likes : [],
-                    comments: Array.isArray(updatedPost.comments) ? updatedPost.comments : []
-                }
+                post: (await withCurrentProfiles([updatedPost]))[0]
             });
         } catch (error) {
             console.error('Error liking post:', error);
@@ -209,11 +238,7 @@ module.exports = (postsCollection, usersCollection) => {
             res.json({
                 success: true,
                 message: 'Comment added successfully',
-                post: {
-                    ...updatedPost,
-                    likes: Array.isArray(updatedPost.likes) ? updatedPost.likes : [],
-                    comments: Array.isArray(updatedPost.comments) ? updatedPost.comments : []
-                }
+                post: (await withCurrentProfiles([updatedPost]))[0]
             });
         } catch (error) {
             console.error('Error adding comment:', error);
